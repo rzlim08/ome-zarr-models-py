@@ -46,9 +46,8 @@ def unique_items_validator(values: list[T]) -> list[T]:
     ValueError
         If duplicate values are found in *values*.
     """
-    for ind, value in enumerate(values, start=1):
-        if value in values[ind:]:
-            raise ValueError(f"Duplicate values found in {values}.")
+    if len(set(values)) != len(values):
+        raise ValueError(f"Duplicate values found in {values}")
     return values
 
 
