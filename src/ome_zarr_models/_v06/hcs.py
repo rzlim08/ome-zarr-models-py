@@ -1,5 +1,5 @@
 from collections.abc import Generator, Mapping
-from typing import TYPE_CHECKING, Self
+from typing import Self
 
 # Import needed for pydantic type resolution
 import pydantic_zarr  # noqa: F401
@@ -12,9 +12,6 @@ from ome_zarr_models._v06.base import BaseGroupv06, BaseOMEAttrs
 from ome_zarr_models._v06.plate import Plate
 from ome_zarr_models._v06.well import Well
 from ome_zarr_models.common.well import WellGroupNotFoundError
-
-if TYPE_CHECKING:
-    from pydantic_zarr.v3 import AnyGroupSpec
 
 __all__ = ["HCS", "HCSAttrs"]
 
@@ -45,18 +42,7 @@ class HCS(BaseGroupv06[HCSAttrs]):
         group : zarr.Group
             A Zarr group that has valid OME-Zarr image metadata.
         """
-        hcs = _from_zarr_v3(group, cls, HCSAttrs)
-        # Traverse all the Well groups, which themselves contain Image groups
-        hcs_flat = hcs.to_flat()
-        for well in hcs.ome_attributes.plate.wells:
-            if well.path in group:
-                well_group = group[well.path]
-                well_group_flat = Well.from_zarr(well_group).to_flat()  # type: ignore[arg-type]
-                for path in well_group_flat:
-                    hcs_flat["/" + well.path + path] = well_group_flat[path]
-
-        hcs_unflat: AnyGroupSpec = GroupSpec.from_flat(hcs_flat)
-        return cls(attributes=hcs_unflat.attributes, members=hcs_unflat.members)
+        return _from_zarr_v3(group, cls, HCSAttrs)
 
     @model_validator(mode="after")
     def _check_valid_acquisitions(self) -> Self:

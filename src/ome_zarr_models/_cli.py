@@ -101,7 +101,13 @@ def info(path: StoreLike) -> None:
         from builtins import print
 
     try:
-        group = zarr.open_group(path, mode="r")
+        from ome_zarr_models._s3 import is_s3_url, make_s3_store
+
+        if isinstance(path, str) and is_s3_url(path):
+            store = make_s3_store(path)
+            group = zarr.open_group(store, mode="r")
+        else:
+            group = zarr.open_group(path, mode="r")
         obj = open_ome_zarr(group)
     except Exception as e:
         print(f"{e}\n")

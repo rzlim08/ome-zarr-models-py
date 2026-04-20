@@ -5,6 +5,7 @@ Private utilities.
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import MISSING, fields, is_dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -63,42 +64,81 @@ def _from_zarr_v2(
         str, pydantic_zarr.v2.AnyGroupSpec | pydantic_zarr.v2.AnyArraySpec
     ] = {}
 
-    # Required array paths
-    for array_path in attrs_cls.get_array_paths(attributes):
-        array_spec = check_array_path(group, array_path, expected_zarr_version=2)
-        members_tree_flat["/" + array_path] = array_spec
+    def _resolve_required_array(array_path: str) -> tuple[str, Any]:
+        return ("/" + array_path, check_array_path(group, array_path, expected_zarr_version=2))
 
-    # Optional array paths
-    for array_path in attrs_cls.get_optional_array_paths(attributes):
+    def _resolve_optional_array(array_path: str) -> tuple[str, Any] | None:
         try:
-            array_spec = check_array_path(group, array_path, expected_zarr_version=2)
+            return ("/" + array_path, check_array_path(group, array_path, expected_zarr_version=2))
         except ValueError:
-            continue
-        members_tree_flat["/" + array_path] = array_spec
+            return None
 
-    # Required group paths
-    required_groups = attrs_cls.get_group_paths(attributes)
-    for group_path in required_groups:
+    def _resolve_required_group(group_path: str, group_type: type) -> list[tuple[str, Any]]:
         check_group_path(group, group_path, expected_zarr_version=2)
-        group_flat = required_groups[group_path].from_zarr(group[group_path]).to_flat()  # type: ignore[arg-type]
-        for path in group_flat:
-            members_tree_flat["/" + group_path + path] = group_flat[path]
+        group_flat = group_type.from_zarr(group[group_path]).to_flat()
+        return [("/" + group_path + path, group_flat[path]) for path in group_flat]
 
-    # Optional group paths
-    optional_groups = attrs_cls.get_optional_group_paths(attributes)
-    for group_path in optional_groups:
+    def _resolve_optional_group(group_path: str, group_type: type) -> list[tuple[str, Any]]:
         try:
             check_group_path(group, group_path, expected_zarr_version=2)
         except FileNotFoundError:
-            continue
-        group_flat = optional_groups[group_path].from_zarr(group[group_path]).to_flat()  # type: ignore[arg-type]
-        for path in group_flat:
-            members_tree_flat["/" + group_path + path] = group_flat[path]
+            return []
+        group_flat = group_type.from_zarr(group[group_path]).to_flat()
+        return [("/" + group_path + path, group_flat[path]) for path in group_flat]
+
+    _submit_and_collect(
+        members_tree_flat,
+        attrs_cls.get_array_paths(attributes),
+        attrs_cls.get_optional_array_paths(attributes),
+        attrs_cls.get_group_paths(attributes),
+        attrs_cls.get_optional_group_paths(attributes),
+        _resolve_required_array,
+        _resolve_optional_array,
+        _resolve_required_group,
+        _resolve_optional_group,
+    )
 
     members_normalized: pydantic_zarr.v2.AnyGroupSpec = (
         pydantic_zarr.v2.GroupSpec.from_flat(members_tree_flat)
     )
     return group_cls(members=members_normalized.members, attributes=attributes)
+
+
+_MAX_WORKERS: int = 8
+
+
+def _submit_and_collect(
+    members_tree_flat: dict[str, Any],
+    required_array_paths: list[str],
+    optional_array_paths: list[str],
+    required_groups: dict[str, type],
+    optional_groups: dict[str, type],
+    resolve_required_array: Any,
+    resolve_optional_array: Any,
+    resolve_required_group: Any,
+    resolve_optional_group: Any,
+) -> None:
+    """Submit all I/O work to a thread pool and collect results."""
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+        futures = []
+        for path in required_array_paths:
+            futures.append(executor.submit(resolve_required_array, path))
+        for path in optional_array_paths:
+            futures.append(executor.submit(resolve_optional_array, path))
+        for path, gtype in required_groups.items():
+            futures.append(executor.submit(resolve_required_group, path, gtype))
+        for path, gtype in optional_groups.items():
+            futures.append(executor.submit(resolve_optional_group, path, gtype))
+
+        for future in as_completed(futures):
+            result = future.result()
+            if result is None:
+                continue
+            if isinstance(result, tuple):
+                members_tree_flat[result[0]] = result[1]
+            else:
+                for key, value in result:
+                    members_tree_flat[key] = value
 
 
 TBaseGroupv3 = TypeVar("TBaseGroupv3", bound="BaseGroupv05[Any] | BaseGroupv06[Any]")
@@ -138,37 +178,39 @@ def _from_zarr_v3(
         str, pydantic_zarr.v3.AnyGroupSpec | pydantic_zarr.v3.AnyArraySpec
     ] = {}
 
-    # Required array paths
-    for array_path in attrs_cls.get_array_paths(ome_attributes):
-        array_spec = check_array_path(group, array_path, expected_zarr_version=3)
-        members_tree_flat["/" + array_path] = array_spec
+    def _resolve_required_array(array_path: str) -> tuple[str, Any]:
+        return ("/" + array_path, check_array_path(group, array_path, expected_zarr_version=3))
 
-    # Optional array paths
-    for array_path in attrs_cls.get_optional_array_paths(ome_attributes):
+    def _resolve_optional_array(array_path: str) -> tuple[str, Any] | None:
         try:
-            array_spec = check_array_path(group, array_path, expected_zarr_version=3)
+            return ("/" + array_path, check_array_path(group, array_path, expected_zarr_version=3))
         except ValueError:
-            continue
-        members_tree_flat["/" + array_path] = array_spec
+            return None
 
-    # Required group paths
-    required_groups = attrs_cls.get_group_paths(ome_attributes)
-    for group_path in required_groups:
+    def _resolve_required_group(group_path: str, group_type: type) -> list[tuple[str, Any]]:
         check_group_path(group, group_path, expected_zarr_version=3)
-        group_flat = required_groups[group_path].from_zarr(group[group_path]).to_flat()  # type: ignore[arg-type]
-        for path in group_flat:
-            members_tree_flat["/" + group_path + path] = group_flat[path]
+        group_flat = group_type.from_zarr(group[group_path]).to_flat()
+        return [("/" + group_path + path, group_flat[path]) for path in group_flat]
 
-    # Optional group paths
-    optional_groups = attrs_cls.get_optional_group_paths(ome_attributes)
-    for group_path in optional_groups:
+    def _resolve_optional_group(group_path: str, group_type: type) -> list[tuple[str, Any]]:
         try:
             check_group_path(group, group_path, expected_zarr_version=3)
         except FileNotFoundError:
-            continue
-        group_flat = optional_groups[group_path].from_zarr(group[group_path]).to_flat()  # type: ignore[arg-type]
-        for path in group_flat:
-            members_tree_flat["/" + group_path + path] = group_flat[path]
+            return []
+        group_flat = group_type.from_zarr(group[group_path]).to_flat()
+        return [("/" + group_path + path, group_flat[path]) for path in group_flat]
+
+    _submit_and_collect(
+        members_tree_flat,
+        attrs_cls.get_array_paths(ome_attributes),
+        attrs_cls.get_optional_array_paths(ome_attributes),
+        attrs_cls.get_group_paths(ome_attributes),
+        attrs_cls.get_optional_group_paths(ome_attributes),
+        _resolve_required_array,
+        _resolve_optional_array,
+        _resolve_required_group,
+        _resolve_optional_group,
+    )
 
     members_normalized: pydantic_zarr.v3.AnyGroupSpec
     members_normalized = pydantic_zarr.v3.GroupSpec.from_flat(members_tree_flat)

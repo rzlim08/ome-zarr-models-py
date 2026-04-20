@@ -103,7 +103,13 @@ def open_ome_zarr(
     """
     if not isinstance(group, zarr.Group):
         zarr_format = _ome_zarr_zarr_map.get(version, None)  # type: ignore[arg-type]
-        group = zarr.open_group(group, zarr_format=zarr_format, mode="r")
+        from ome_zarr_models._s3 import is_s3_url, make_s3_store
+
+        if isinstance(group, str) and is_s3_url(group):
+            store = make_s3_store(group)
+            group = zarr.open_group(store, zarr_format=zarr_format, mode="r")
+        else:
+            group = zarr.open_group(group, zarr_format=zarr_format, mode="r")
 
     # because 'from_zarr' isn't defined on a shared super-class, list all variants here
     groups: Sequence[_AnyGroup]
